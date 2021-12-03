@@ -1,0 +1,303 @@
+name: Build, Push and Deploy
+
+on: push
+
+jobs:
+  notifyBuildStart:
+    name: Notify Build Start
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Build Start
+        uses: rtCamp/action-slack-notify@master
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_CHANNEL: devops
+          SLACK_COLOR: 'warning'
+          SLACK_ICON_EMOJI: ':robot_face:'
+          SLACK_MESSAGE: 'Build started'
+          SLACK_TITLE: Start building ${{ github.event.repository.name }}
+          SLACK_USERNAME: jarvis
+  build:
+    name: Build Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          submodules: recursive
+      - name: Extract repository info
+        shell: bash
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          TAG="${BRANCH_NAME//\//-}"
+          if [[ ${TAG} == "master" ]]; then TAG="unstable"; fi
+          if [[ $(echo ${TAG} | cut -d'-' -f 1) == "release" ]]; then TAG=$(echo ${TAG} | cut -d'-' -f 2); fi
+          REAL_NAME=${{ github.event.repository.name }}
+          NAME=$(echo ${REAL_NAME}| sed 's/elinvo-spa-//g')
+          echo "::set-output name=real_name::${REAL_NAME}"
+          echo "::set-output name=name::${NAME}"
+          echo "::set-output name=branch::${TAG}"
+          echo "::set-output name=target::${TARGET}"
+        id: repository_info
+      - name: Cache Docker layers
+        uses: actions/cache@v2
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ hashFiles('Dockerfile') }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      - name: Login to GCP Image Registry
+        uses: docker/login-action@v1
+        with:
+          registry: gcr.io
+          username: _json_key
+          password: ${{ secrets.GCP_SA }}
+      - name: Build image
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          file: Dockerfile
+          tags: |
+            gcr.io/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}
+          push: true
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
+          secrets: |
+            GIT_AUTH_TOKEN=${{ secrets.GH_TOKEN }}
+  test-on-chrome:
+    name: Test On Chrome
+    runs-on: ubuntu-latest
+    needs: [ build ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          submodules: recursive
+      - name: Extract repository info
+        shell: bash
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          TAG="${BRANCH_NAME//\//-}"
+          if [[ ${TAG} == "master" ]]; then TAG="unstable"; fi
+          if [[ $(echo ${TAG} | cut -d'-' -f 1) == "release" ]]; then TAG=$(echo ${TAG} | cut -d'-' -f 2); fi
+          REAL_NAME=${{ github.event.repository.name }}
+          NAME=$(echo ${REAL_NAME}| sed 's/elinvo-spa-//g')
+          echo "::set-output name=real_name::${REAL_NAME}"
+          echo "::set-output name=name::${NAME}"
+          echo "::set-output name=branch::${TAG}"
+          echo "::set-output name=target::${TARGET}"
+        id: repository_info
+      - name: Login to GCP Image Registry
+        uses: docker/login-action@v1
+        with:
+          registry: gcr.io
+          username: _json_key
+          password: ${{ secrets.GCP_SA }}
+      - name: Test
+        shell: bash
+        run: |
+          mkdir -p ~/.docker/cli-plugins/
+          curl -SL https://github.com/docker/compose/releases/download/v2.0.0/docker-compose-linux-amd64 -o ~/.docker/cli-plugins/docker-compose
+          chmod +x ~/.docker/cli-plugins/docker-compose
+          export TAG=${{ steps.repository_info.outputs.branch }}
+          docker pull gcr.io/elinvo-com/spa:${TAG}
+          cp .github/workflows/files/docker-compose.yml docker-compose.yml
+          cp .github/workflows/files/.env .env
+          export STRIPE_PUBLISHABLE_KEY="${{ secrets.STRIPE_PUBLISHABLE_KEY }}"
+          export STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"
+          export STRIPE_WEBHOOK_SECRET="${{ secrets.BLACKFIRE_CLIENT_TOKEN }}"
+          export PAYPAL_CLIENT_ID="${{ secrets.PAYPAL_CLIENT_ID }}"
+          export PAYPAL_CLIENT_SECRET="${{ secrets.PAYPAL_CLIENT_SECRET }}"
+          export PAYPAL_WEBHOOK_ID="${{ secrets.PAYPAL_WEBHOOK_ID }}"
+          sed -i 's/GITHUB_RUN_NUMBER_X/'${GITHUB_RUN_NUMBER}'/g' .env
+          sed -i 's/STRIPE_PUBLISHABLE_KEY_X/'${STRIPE_PUBLISHABLE_KEY}'/g' .env
+          sed -i 's/STRIPE_SECRET_KEY_X/'${STRIPE_SECRET_KEY}'/g' .env
+          sed -i 's/STRIPE_WEBHOOK_SECRET_X/'${STRIPE_WEBHOOK_SECRET}'/g' .env
+          sed -i 's/PAYPAL_CLIENT_ID_X/'${PAYPAL_CLIENT_ID}'/g' .env
+          sed -i 's/PAYPAL_CLIENT_SECRET_X/'${PAYPAL_CLIENT_SECRET}'/g' .env
+          sed -i 's/PAYPAL_WEBHOOK_ID_X/'${PAYPAL_WEBHOOK_ID}'/g' .env
+          docker compose up -d
+          docker compose ps
+          docker compose exec cypress npm install --dev
+          while [[ $(docker compose ps user | cut -d$'\n' -f 3 | cut -d' ' -f 9) != 'healthy' ]]; do
+            printf ">> \e[21m\e[32mwait user service to come healthy its $(docker compose ps user | cut -d$'\n' -f 3 | cut -d' ' -f 9)\n\e[0m"
+            docker compose ps user | cut -d$'\n' -f 3
+            sleep 10
+          done
+          while [[ $(docker compose ps spa | cut -d$'\n' -f 3 | cut -d' ' -f 10) != 'healthy' ]]; do
+            printf ">> \e[21m\e[32mwait spa service to come healthy its $(docker compose ps spa | cut -d$'\n' -f 3 | cut -d' ' -f 10)\n\e[0m"
+            docker compose ps spa | cut -d$'\n' -f 3
+            sleep 10
+          done
+          BROWSER="chrome"
+          CYPRESS_BUILD_ID="${GITHUB_RUN_NUMBER}-${GITHUB_SHA}"
+          docker compose exec cypress cypress run \
+            --headless \
+            --browser "${BROWSER}" \
+            --tag "${CYPRESS_BUILD_ID}" \
+            --group "${CYPRESS_BUILD_ID}-${BROWSER}" \
+            --ci-build-id "${CYPRESS_BUILD_ID}" \
+            --record \
+            --key ${{ secrets.CYPRESS_RECORD_KEY }} \
+            --env GITHUB_TOKEN=${{ secrets.GH_TOKEN }} || (docker compose logs spa && docker compose exec spa cat logs/app.log && docker compose logs user && docker compose logs traefik && exit 1)
+  test-on-firefox:
+    name: Test On Firefox
+    runs-on: ubuntu-latest
+    needs: [ build ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          submodules: recursive
+      - name: Extract repository info
+        shell: bash
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          TAG="${BRANCH_NAME//\//-}"
+          if [[ ${TAG} == "master" ]]; then TAG="unstable"; fi
+          if [[ $(echo ${TAG} | cut -d'-' -f 1) == "release" ]]; then TAG=$(echo ${TAG} | cut -d'-' -f 2); fi
+          REAL_NAME=${{ github.event.repository.name }}
+          NAME=$(echo ${REAL_NAME}| sed 's/elinvo-spa-//g')
+          echo "::set-output name=real_name::${REAL_NAME}"
+          echo "::set-output name=name::${NAME}"
+          echo "::set-output name=branch::${TAG}"
+          echo "::set-output name=target::${TARGET}"
+        id: repository_info
+      - name: Login to GCP Image Registry
+        uses: docker/login-action@v1
+        with:
+          registry: gcr.io
+          username: _json_key
+          password: ${{ secrets.GCP_SA }}
+      - name: Test
+        shell: bash
+        run: |
+          mkdir -p ~/.docker/cli-plugins/
+          curl -SL https://github.com/docker/compose/releases/download/v2.0.0/docker-compose-linux-amd64 -o ~/.docker/cli-plugins/docker-compose
+          chmod +x ~/.docker/cli-plugins/docker-compose
+          export TAG=${{ steps.repository_info.outputs.branch }}
+          docker pull gcr.io/elinvo-com/spa:${TAG}
+          cp .github/workflows/files/docker-compose.yml docker-compose.yml
+          cp .github/workflows/files/.env .env
+          export STRIPE_PUBLISHABLE_KEY="${{ secrets.STRIPE_PUBLISHABLE_KEY }}"
+          export STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"
+          export STRIPE_WEBHOOK_SECRET="${{ secrets.BLACKFIRE_CLIENT_TOKEN }}"
+          export PAYPAL_CLIENT_ID="${{ secrets.PAYPAL_CLIENT_ID }}"
+          export PAYPAL_CLIENT_SECRET="${{ secrets.PAYPAL_CLIENT_SECRET }}"
+          export PAYPAL_WEBHOOK_ID="${{ secrets.PAYPAL_WEBHOOK_ID }}"
+          sed -i 's/GITHUB_RUN_NUMBER_X/'${GITHUB_RUN_NUMBER}'/g' .env
+          sed -i 's/STRIPE_PUBLISHABLE_KEY_X/'${STRIPE_PUBLISHABLE_KEY}'/g' .env
+          sed -i 's/STRIPE_SECRET_KEY_X/'${STRIPE_SECRET_KEY}'/g' .env
+          sed -i 's/STRIPE_WEBHOOK_SECRET_X/'${STRIPE_WEBHOOK_SECRET}'/g' .env
+          sed -i 's/PAYPAL_CLIENT_ID_X/'${PAYPAL_CLIENT_ID}'/g' .env
+          sed -i 's/PAYPAL_CLIENT_SECRET_X/'${PAYPAL_CLIENT_SECRET}'/g' .env
+          sed -i 's/PAYPAL_WEBHOOK_ID_X/'${PAYPAL_WEBHOOK_ID}'/g' .env
+          docker compose up -d
+          docker compose ps
+          docker compose exec cypress npm install
+          while [[ $(docker compose ps user | cut -d$'\n' -f 3 | cut -d' ' -f 9) != 'healthy' ]]; do
+            printf ">> \e[21m\e[32mwait user service to come healthy its $(docker compose ps user | cut -d$'\n' -f 3 | cut -d' ' -f 9)\n\e[0m"
+            docker compose ps user | cut -d$'\n' -f 3
+            sleep 10
+          done
+          while [[ $(docker compose ps spa | cut -d$'\n' -f 3 | cut -d' ' -f 10) != 'healthy' ]]; do
+            printf ">> \e[21m\e[32mwait spa service to come healthy its $(docker compose ps spa | cut -d$'\n' -f 3 | cut -d' ' -f 10)\n\e[0m"
+            docker compose ps spa | cut -d$'\n' -f 3
+            sleep 10
+          done
+          BROWSER="firefox"
+          CYPRESS_BUILD_ID="${GITHUB_RUN_NUMBER}-${GITHUB_SHA}"
+          docker compose exec cypress cypress run \
+            --headless \
+            --browser "${BROWSER}" \
+            --tag "${CYPRESS_BUILD_ID}" \
+            --group "${CYPRESS_BUILD_ID}-${BROWSER}" \
+            --ci-build-id "${CYPRESS_BUILD_ID}" \
+            --record \
+            --key ${{ secrets.CYPRESS_RECORD_KEY }} \
+            --env GITHUB_TOKEN=${{ secrets.GH_TOKEN }} || (docker compose logs spa && docker compose exec spa cat logs/app.log && docker compose logs user && docker compose logs traefik && exit 1)
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [ test-on-chrome, test-on-firefox ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          submodules: recursive
+      - name: Extract repository info
+        shell: bash
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          TAG="${BRANCH_NAME//\//-}"
+          if [[ ${TAG} == "master" ]]; then TAG="unstable"; fi
+          if [[ $(echo ${TAG} | cut -d'-' -f 1) == "release" ]]; then TAG=$(echo ${TAG} | cut -d'-' -f 2); fi
+          REAL_NAME=${{ github.event.repository.name }}
+          NAME=$(echo ${REAL_NAME}| sed 's/elinvo-spa-//g')
+          echo "::set-output name=real_name::${REAL_NAME}"
+          echo "::set-output name=name::${NAME}"
+          echo "::set-output name=branch::${TAG}"
+          echo "::set-output name=target::${TARGET}"
+        id: repository_info
+      - name: Copy all files inside Dockerfiles
+        shell: bash
+        run: |
+          cd Dockerfiles/node
+          rsync -av --progress ../../* . --exclude Dockerfiles --exclude .github
+          rm -rf node_modules
+      - name: Login to GCP Image Registry
+        uses: docker/login-action@v1
+        with:
+          registry: gcr.io
+          username: _json_key
+          password: ${{ secrets.GCP_SA }}
+      - name: Push tagged docker iamge
+        run: |
+          docker pull gcr.io/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}
+          docker tag gcr.io/elinvo-com/spa:${{ steps.repository_info.outputs.branch }} gcr.io/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}-${GITHUB_RUN_NUMBER}
+          docker push gcr.io/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}-${GITHUB_RUN_NUMBER}
+      - name: Sentry Release
+        if: steps.repository_info.outputs.deploy == 'yes'
+        uses: getsentry/action-release@v1
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: timgla
+          SENTRY_PROJECT: ${{ steps.repository_info.outputs.real_name }}
+        with:
+          environment: production
+          version: ${{ steps.repository_info.outputs.real_name }}-${{ steps.repository_info.outputs.branch }}
+  notifyBuildEnd:
+    name: Notify Build End
+    runs-on: ubuntu-latest
+    needs: [ deploy ]
+    if: always()
+    steps:
+      - uses: technote-space/workflow-conclusion-action@v1
+      - name: Notify Build End
+        uses: rtCamp/action-slack-notify@master
+        if: env.WORKFLOW_CONCLUSION != 'failure'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_CHANNEL: devops
+          SLACK_COLOR: 'good'
+          SLACK_ICON_EMOJI: ':robot_face:'
+          SLACK_MESSAGE: 'Build finished'
+          SLACK_TITLE: ${{ github.event.repository.name }} build completed sucessfully
+          SLACK_USERNAME: jarvis
+      - name: Notify Build End Failing
+        uses: rtCamp/action-slack-notify@master
+        if: env.WORKFLOW_CONCLUSION == 'failure'
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_CHANNEL: devops
+          SLACK_COLOR: '#FF0000'
+          SLACK_ICON_EMOJI: ':robot_face:'
+          SLACK_MESSAGE: 'Build finished with errors'
+          SLACK_TITLE: ${{ github.event.repository.name }} build failed
+          SLACK_USERNAME: jarvis

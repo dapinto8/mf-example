@@ -1,0 +1,91 @@
+version: "3.8"
+services:
+  traefik:
+    image: traefik:v2.5
+    command:
+      - "--accesslog=true"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      api:
+        ipv4_address: 12.12.12.100
+  mongo:
+    image: mongo:5.0
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin
+    networks:
+      api: null
+  redis-auth:
+    image: redis:6.0
+    networks:
+      api: null
+  redis-test:
+    image: redis:6.0
+    networks:
+      api: null
+  redis-live:
+    image: redis:6.0
+    networks:
+      api: null
+  mailcatcher:
+    image: schickling/mailcatcher
+    networks:
+      api: null
+  spa:
+    image: gcr.io/metises-com/spa:$TAG
+    command:
+      - "start:test"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.spa.rule=Host(`app.metises.com`)"
+      - "traefik.http.routers.spa.entrypoints=websecure"
+      - "traefik.http.routers.spa.tls=true"
+      - "traefik.http.services.spa.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.cors.headers.accesscontrolalloworiginlist=*"
+      - "traefik.http.middlewares.cors.headers.accesscontrolallowmethods=OPTIONS,GET,POST,PUT,DELETE"
+      - "traefik.http.middlewares.cors.headers.accesscontrolallowheaders=Content-Type,Authorization,live,LIVE"
+      - "traefik.http.middlewares.cors.headers.accesscontrolmaxage=100"
+      - "traefik.http.middlewares.cors.headers.addvaryheader=true"
+      - "traefik.http.routers.spa.middlewares=cors@docker"
+    extra_hosts:
+      - api.metises.com:12.12.12.100
+    networks:
+      api: null
+    depends_on:
+      - traefik
+      - mongo
+      - redis-auth
+      - redis-test
+      - redis-live
+  cypress:
+    image: cypress/included:8.2.0
+    networks:
+      api: null
+    depends_on:
+      - traefik
+      - mongo
+      - redis-auth
+      - redis-test
+      - redis-live
+    entrypoint:
+      - tail
+    command:
+      - "-f"
+      - "/var/log/faillog"
+    extra_hosts:
+      - app.metises.com:12.12.12.100
+    working_dir: /app
+    volumes:
+      - .:/app
+networks:
+  api:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 12.12.12.0/24
