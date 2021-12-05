@@ -52,16 +52,16 @@ jobs:
       - name: Login to GCP Image Registry
         uses: docker/login-action@v1
         with:
-          registry: gcr.io
+          registry: us-docker.pkg.dev
           username: _json_key
-          password: ${{ secrets.GCP_SA }}
+          password: ${{ secrets.METISES_GCP_SA }}
       - name: Build image
         uses: docker/build-push-action@v2
         with:
           context: .
           file: Dockerfile
           tags: |
-            gcr.io/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}
+            us-docker.pkg.dev/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}
           push: true
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache
@@ -94,9 +94,9 @@ jobs:
       - name: Login to GCP Image Registry
         uses: docker/login-action@v1
         with:
-          registry: gcr.io
+          registry: us-docker.pkg.dev
           username: _json_key
-          password: ${{ secrets.GCP_SA }}
+          password: ${{ secrets.METISES_GCP_SA }}
       - name: Test
         shell: bash
         run: |
@@ -104,7 +104,7 @@ jobs:
           curl -SL https://github.com/docker/compose/releases/download/v2.0.0/docker-compose-linux-amd64 -o ~/.docker/cli-plugins/docker-compose
           chmod +x ~/.docker/cli-plugins/docker-compose
           export TAG=${{ steps.repository_info.outputs.branch }}
-          docker pull gcr.io/elinvo-com/spa:${TAG}
+          docker pull us-docker.pkg.dev/elinvo-com/spa:${TAG}
           cp .github/workflows/files/docker-compose.yml docker-compose.yml
           cp .github/workflows/files/.env .env
           export STRIPE_PUBLISHABLE_KEY="${{ secrets.STRIPE_PUBLISHABLE_KEY }}"
@@ -171,9 +171,9 @@ jobs:
       - name: Login to GCP Image Registry
         uses: docker/login-action@v1
         with:
-          registry: gcr.io
+          registry: us-docker.pkg.dev
           username: _json_key
-          password: ${{ secrets.GCP_SA }}
+          password: ${{ secrets.METISES_GCP_SA }}
       - name: Test
         shell: bash
         run: |
@@ -181,7 +181,7 @@ jobs:
           curl -SL https://github.com/docker/compose/releases/download/v2.0.0/docker-compose-linux-amd64 -o ~/.docker/cli-plugins/docker-compose
           chmod +x ~/.docker/cli-plugins/docker-compose
           export TAG=${{ steps.repository_info.outputs.branch }}
-          docker pull gcr.io/elinvo-com/spa:${TAG}
+          docker pull us-docker.pkg.dev/elinvo-com/spa:${TAG}
           cp .github/workflows/files/docker-compose.yml docker-compose.yml
           cp .github/workflows/files/.env .env
           export STRIPE_PUBLISHABLE_KEY="${{ secrets.STRIPE_PUBLISHABLE_KEY }}"
@@ -254,14 +254,14 @@ jobs:
       - name: Login to GCP Image Registry
         uses: docker/login-action@v1
         with:
-          registry: gcr.io
+          registry: us-docker.pkg.dev
           username: _json_key
-          password: ${{ secrets.GCP_SA }}
+          password: ${{ secrets.METISES_GCP_SA }}
       - name: Push tagged docker iamge
         run: |
-          docker pull gcr.io/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}
-          docker tag gcr.io/elinvo-com/spa:${{ steps.repository_info.outputs.branch }} gcr.io/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}-${GITHUB_RUN_NUMBER}
-          docker push gcr.io/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}-${GITHUB_RUN_NUMBER}
+          docker pull us-docker.pkg.dev/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}
+          docker tag us-docker.pkg.dev/elinvo-com/spa:${{ steps.repository_info.outputs.branch }} us-docker.pkg.dev/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}-${GITHUB_RUN_NUMBER}
+          docker push us-docker.pkg.dev/elinvo-com/spa:${{ steps.repository_info.outputs.branch }}-${GITHUB_RUN_NUMBER}
       - name: Sentry Release
         if: steps.repository_info.outputs.deploy == 'yes'
         uses: getsentry/action-release@v1

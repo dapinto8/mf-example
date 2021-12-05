@@ -38,7 +38,7 @@ services:
     networks:
       api: null
   spa:
-    image: gcr.io/metises-com/spa:$TAG
+    image: us-docker.pkg.dev/metises-com/metises/spa:$TAG
     command:
       - "start:test"
     labels:
